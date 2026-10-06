@@ -1,4 +1,6 @@
 from decimal import Decimal
+
+import pandas as pd
 from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
 from test.logger_mixin_for_test import LoggerMixinForTest
 from unittest.mock import MagicMock, PropertyMock, patch
@@ -10,6 +12,7 @@ from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState,
 from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount
 from hummingbot.core.event.events import MarketOrderFailureEvent
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base
+from hummingbot.strategy_v2.backtesting.executors_simulator.dca_executor_simulator import DCAExecutorSimulator
 from hummingbot.strategy_v2.executors.dca_executor.data_types import DCAExecutorConfig, DCAMode
 from hummingbot.strategy_v2.executors.dca_executor.dca_executor import DCAExecutor
 from hummingbot.strategy_v2.executors.position_executor.data_types import TrailingStop
@@ -83,6 +86,25 @@ class TestDCAExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         self.assertEqual(custom_info["close_timestamp"], None)
         self.assertEqual(custom_info["current_market_price"], Decimal("120"))
         self.assertEqual(custom_info["current_position_average_price"], Decimal("0"))
+
+    def test_simulate_uses_entry_timestamp_for_each_dca_stage(self):
+        timestamps = [1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0]
+        prices = [100.0, 95.0, 90.0, 85.0, 80.0, 85.0]
+        df = pd.DataFrame({"timestamp": timestamps, "close": prices, "low": prices, "high": prices},
+                          index=pd.Index(timestamps, name="timestamp"))
+        config = DCAExecutorConfig(id="test", timestamp=1000.0, side=TradeType.BUY, connector_name="binance",
+                                   trading_pair="ETH-USDT",
+                                   amounts_quote=[Decimal(10), Decimal(20), Decimal(30)],
+                                   prices=[Decimal(100), Decimal(90), Decimal(80)],
+                                   stop_loss=Decimal("0.5"))
+
+        result = DCAExecutorSimulator().simulate(df, config, trade_cost=0)
+        simulation = result.executor_simulation
+
+        self.assertEqual(simulation.loc[1000.0, "filled_amount_quote_0"], 10.0)
+        self.assertEqual(simulation.loc[3000.0, "filled_amount_quote_1"], 20.0)
+        self.assertLess(simulation.loc[4000.0, "net_pnl_quote_1"], 0)
+        self.assertAlmostEqual(simulation.loc[3000.0, "current_position_average_price"], 2800 / 30)
 
     @patch.object(DCAExecutor, "get_price")
     async def test_activation_bounds_prevents_order_creation(self, get_price_mock):
