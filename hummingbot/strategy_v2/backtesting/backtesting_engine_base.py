@@ -288,7 +288,7 @@ class BacktestingEngineBase:
                     if executor_simulation is not None and executor_simulation.close_type != CloseType.FAILED:
                         self.manage_active_executors(executor_simulation)
                 elif isinstance(action, StopExecutorAction):
-                    self.handle_stop_action(action, row["timestamp"])
+                    self.handle_stop_action(action, row["timestamp"], processed_features, trade_cost)
 
         # Closing tick: everything determine_executor_actions() did on the last row happened
         # after that tick's update_executors_info(). Give the engine one last look so those
@@ -565,14 +565,13 @@ class BacktestingEngineBase:
 
         self._pending_position_hold_executors.clear()
 
-    def handle_stop_action(self, action: StopExecutorAction, timestamp: float):
+    def handle_stop_action(self, action: StopExecutorAction, timestamp: float,
+                           market_data: Optional[pd.DataFrame] = None, trade_cost: Optional[float] = None):
         """
-        Handles stop actions for executors, terminating them as required.
+        Handle a controller stop. A closing DCA position must settle against the
+        candles available at this tick, not the future end of its original simulation.
+        """
 
-        Args:
-            action (StopExecutorAction): The action indicating which executor to stop.
-            timestamp (float): The current timestamp.
-        """
         # Skip if this executor was already processed as a position hold
         if action.executor_id in self._position_hold_processed_ids:
             return
@@ -580,6 +579,19 @@ class BacktestingEngineBase:
         for executor in self.active_executor_simulations:
             executor_info = executor.get_executor_info_at_timestamp(timestamp)
             if executor_info.config.id == action.executor_id:
+                if isinstance(executor.config, DCAExecutorConfig) and not action.keep_position and executor_info.filled_amount_quote > 0:
+                    if market_data is None or trade_cost is None:
+                        raise ValueError("DCA early close requires candle data and the backtest trade cost")
+                    candles = market_data.loc[executor.config.timestamp:timestamp]
+                    if candles.empty or candles.index[-1] != timestamp:
+                        raise ValueError("DCA early close requires the current completed candle")
+                    # The native simulator settles at the final candle close, charging its
+                    # modeled entry/exit fees; no post-stop candles may influence the fill.
+                    stopped_simulation = self.dca_executor_simulator.simulate(candles, executor.config, trade_cost)
+                    if stopped_simulation.close_type == CloseType.FAILED:
+                        raise ValueError("DCA early close failed to settle the filled position")
+                    executor_info = stopped_simulation.get_executor_info_at_timestamp(timestamp)
+
                 executor_info.status = RunnableStatus.TERMINATED
                 executor_info.is_active = False
                 executor_info.is_trading = False
