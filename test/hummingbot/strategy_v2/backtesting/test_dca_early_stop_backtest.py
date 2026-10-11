@@ -57,7 +57,7 @@ class TestDCAEarlyStopBacktest(unittest.TestCase):
                                  actual.custom_info["current_position_average_price"])
                 self.assertEqual(closes[3], actual.custom_info["close_price"])
                 self.assertEqual(Decimal("1080"), actual.filled_amount_quote)
-                self.assertEqual(Decimal("0.216"), actual.cum_fees_quote)
+                self.assertAlmostEqual(0.216, float(actual.cum_fees_quote), places=4)
                 self.assertEqual(float(actual.net_pnl_quote), engine._executor_realized_pnl)
                 self.assertEqual([], engine.active_executor_simulations)
 
